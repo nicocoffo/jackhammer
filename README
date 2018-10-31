@@ -1,1 +1,5 @@
 Run scripts on a bunch of pre-emptible machines, until they work
+
+Todo:
+  - Move to general cloud library
+  - Improve failure handling
