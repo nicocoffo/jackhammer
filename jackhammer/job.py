@@ -102,11 +102,8 @@ class Job:
         """
         In the event of a failure, determine whether a repeat is worthwhile.
         """
-        # TODO: Better logic
-        #if self.failures < MAX_FAILURES:
-        #    self.logger.error("Repeating job %s" % self.name)
-        #    self.failures += 1
-        #    return True
+        if self.failures < MAX_FAILURES:
+            self.logger.error("Repeating job: %s", self.name)
+            self.failures += 1
+            return True
         return False
-
-

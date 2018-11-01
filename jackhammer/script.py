@@ -23,6 +23,7 @@ class Script:
         self.script = script
         self.path, self.file = os.path.split(script)
         self.name = self.file if name == None else name
+        self.error = b''
 
         # Generate the command
         l = ['"' + a + '"' for a in args]
@@ -43,14 +44,19 @@ class Script:
         Launch the script, stashing its output and checking the
         return code.
         """
-        stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
+        stdin, stdout, stderr = client.exec_command(cmd)
+        #stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
         stdout._set_mode('b')
+        stderr._set_mode('b')
         channel = stdout.channel
 
         self.logs = b''
+        self.error = b''
         while not channel.exit_status_ready():
             if channel.recv_ready():
                 self.logs += channel.recv(2048)
+            if channel.recv_stderr_ready():
+                self.error += channel.recv_stderr(2048)
             time.sleep(1)
             timeout -= 1
             if timeout <= 0:
@@ -82,6 +88,7 @@ class Script:
 
         if result != True:
             self.logger.error("Execution failed: \n %s" % self.logs)
+            self.logger.error(self.error)
         else:
             self.logger.info("Execution succeeded")
 

@@ -15,6 +15,7 @@ class Scheduler(threading.Thread):
     Launches the server and runner threads.
     """
     name = "jackhammer.scheduler"
+    maxInfraFailures = 3
 
     def __init__(self,
                  provider,
