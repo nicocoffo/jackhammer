@@ -1,1 +1,1 @@
-from .gcp import GCP
+from .gcp import GCP, GCPGen

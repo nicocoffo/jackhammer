@@ -19,7 +19,7 @@ class Scheduler(threading.Thread):
 
     def __init__(self,
                  provider,
-                 job_class=Job,
+                 job_generator,
                  queue=JobQueue(),
                  port=9321,
                  pollDelay=0.5,
@@ -33,7 +33,7 @@ class Scheduler(threading.Thread):
 
         # Config
         self.provider = provider
-        self.job_class = job_class
+        self.job_generator = job_generator
         self.port = port
         self.pollDelay = pollDelay
         self.cleanupTimeout = cleanupTimeout
@@ -63,7 +63,7 @@ class Scheduler(threading.Thread):
                 runner.job.failure_cleanup()
 
             # Cleanup any left over machines
-            self.provider.delete_all_machines()
+            self.provider.create().delete_all_machines()
 
     def shutdown(self):
         """
@@ -76,20 +76,20 @@ class Scheduler(threading.Thread):
         """
         Launch a runner with the provided job.
         """
-        r = Runner(job, self.provider)
+        r = Runner(job, self.provider.create())
         self.runners.append(r)
         r.start()
 
-    def create_job(self, post):
+    def create_jobs(self, post):
         try:
-            job = self.job_class(post, self.index)
+            jobs = self.job_generator(post, self.index)
             self.index += 1
             if self.index > MAX_INDEX:
                 self.index = 0
-            return job
+            return jobs
         except Exception as e:
-            self.logger.error("Failed to create job: " + str(e))
-            return None
+            self.logger.error("Failed to create jobs: " + str(e))
+            return []
 
     def cleanup_job(self, job):
         """
@@ -130,9 +130,10 @@ class Scheduler(threading.Thread):
         while not self.shutdown_flag.is_set():
             # Grab a job and launch if desired
             while not self.jobs.empty():
-                job = self.create_job(self.jobs.dequeue())
-                if job:
+                jobs = self.create_jobs(self.jobs.dequeue())
+                for job in jobs:
                     self.launch_job(job)
+                if len(jobs) > 0:
                     break
 
             # Manage running jobs

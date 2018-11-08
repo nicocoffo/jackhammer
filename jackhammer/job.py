@@ -29,49 +29,32 @@ class Job:
         Create a job from POST bytes and a 'unique' index
         """
         self.logger = logging.getLogger("jackhammer.job")
-        self.payload = json.loads(post_bytes.decode('utf-8'))
-        self.name = 'task-%d' % index
+        self.name = 'job-%d' % index
         self.username = "root"
         self.bits = 2048
-        self.machineLogs = b''
         self.scripts = []
 
         # State
-        self.state = None
-        self.failure = False
         self.failures = 0
-
-    def set_failure(self, state, msg):
-        """
-        Manage failure cases.
-        """
-        self.failure = True
-        self.state = state
-        self.logger.error(("Job %s: " % self.name) + ("%s %s" % (state, msg)))
-
-    def set_state(self, state):
-        self.state = state
+        self.returnCode = None
 
     def execute(self, client):
         """
         Run the job on the client 
         """
         for script in self.scripts:
-            if not script.execute(client):
-                break
+            status = script.execute(client)
+            if status != 0:
+                self.returnCode = status
+                return
+        self.returnCode = 0
         return
 
     def completed(self):
         """
         Test if the script completed successfully
         """
-        return True
-
-    def repeat(self):
-        """
-        Test if the job should be repeated, in event of failure
-        """
-        return False
+        return self.returnCode == 0
 
     def infra_cleanup(self):
         """
@@ -92,18 +75,23 @@ class Job:
         """
         pass
 
+    def repeat(self):
+        """
+        In the event of a failure, determine whether a repeat is worthwhile.
+        """
+        # Assume a lack of return code indicates preemption
+        if self.returnCode == -1:
+            return True
+
+        # Limited number of attempts
+        if self.failures < MAX_FAILURES:
+            self.failures += 1
+            return True
+
+        return False
+
     def __repr__(self):
         return self.name
 
     def __str__(self):
         return self.name
-
-    def repeat(self):
-        """
-        In the event of a failure, determine whether a repeat is worthwhile.
-        """
-        if self.failures < MAX_FAILURES:
-            self.logger.error("Repeating job: %s", self.name)
-            self.failures += 1
-            return True
-        return False

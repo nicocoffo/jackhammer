@@ -12,8 +12,17 @@ import googleapiclient.discovery
 def generate_uid(size=32, chars=string.ascii_lowercase + string.digits):
   return ''.join(random.choice(chars) for _ in range(size))
 
-class GCP:
+class GCPGen:
     def __init__(self, project, zone, uid=None):
+        self.project = project
+        self.zone = zone
+        self.uid = generate_uid() if uid == None else uid
+
+    def create(self):
+        return GCP(self.project, self.zone, self.uid)
+
+class GCP:
+    def __init__(self, project, zone, uid):
         self.uid = generate_uid() if uid == None else uid
         self.compute = googleapiclient.discovery.build('compute', 'v1',
                 cache_discovery=False)
@@ -58,7 +67,7 @@ class GCP:
         ops = []
         machines = self._list()
 
-        if len(machines) < 1:
+        if machines == None or len(machines) < 1:
             return
 
         logging.debug("Removing %d machines:" % len(machines))

@@ -39,30 +39,40 @@ class Script:
         finally:
             sftp.close()
 
+    def collect_output(self, channel):
+        if channel.recv_ready():
+            self.logs += channel.recv(2048).decode('ascii', errors="ignore")
+        if channel.recv_stderr_ready():
+            self.error += channel.recv_stderr(2048).decode('ascii', errors="ignore")
+
     def launch(self, client, cmd, timeout):
         """
         Launch the script, stashing its output and checking the
         return code.
         """
-        stdin, stdout, stderr = client.exec_command(cmd)
-        #stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
-        stdout._set_mode('b')
-        stderr._set_mode('b')
-        channel = stdout.channel
+        transport = client.get_transport()
+        channel = transport.open_session()
+        channel.exec_command(cmd)
 
-        self.logs = b''
-        self.error = b''
+        self.logs = ''
+        self.error = ''
         while not channel.exit_status_ready():
-            if channel.recv_ready():
-                self.logs += channel.recv(2048)
-            if channel.recv_stderr_ready():
-                self.error += channel.recv_stderr(2048)
+            self.collect_output(channel)
             time.sleep(1)
             timeout -= 1
             if timeout <= 0:
-                return False
+                self.logger.error("SSH timeout")
+                channel.close()
+                return -1
 
-        return channel.recv_exit_status() == 0
+        self.collect_output(channel)
+        status = channel.recv_exit_status()
+
+        if status == -1:
+            self.logger.error("Server did not return a status")
+        elif status != 0:
+            self.logger.error("Server return non-zero status: %d", status)
+        return status 
 
     def execute(self, client, timeout=DEFAULT_TIMEOUT):
         """
@@ -77,21 +87,22 @@ class Script:
             self.send(client, tmpScript)
         except Exception as e:
             self.logger.error("Failed to send script: " + str(e))
-            return False
+            return -1
 
         self.logger.info("Launching script: %s" % cmd)
         try:
             result = self.launch(client, cmd, timeout)
         except Exception as e:
             self.logger.error("Failed to run script: " + str(e))
-            return False
+            return -1
 
-        if result != True:
-            self.logger.error("Execution failed: \n %s" % self.logs)
-            self.logger.error(self.error)
+        if result != 0:
+            self.logger.error("Execution failed")
         else:
             self.logger.info("Execution succeeded")
 
+        self.logger.debug("STDOUT:\n" + self.logs)
+        self.logger.debug("STDERR:\n" + self.error)
         return result
 
     def __repr__(self):
