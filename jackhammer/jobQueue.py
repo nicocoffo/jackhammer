@@ -1,11 +1,11 @@
 # Standard Python libraries
-import json
-import logging
 import queue
-from enum import Enum
-import operator
 
 class JobQueue:
+    """
+    Wrapper around python queue, mostly focused
+    on simplyfing use of the dequeue operation.
+    """
 
     def __init__(self):
         self.jobs = queue.Queue()
@@ -16,12 +16,11 @@ class JobQueue:
     def enqueue(self, job):
         self.jobs.put(job)
 
-    def dequeue(self):
-        return self.jobs.get_nowait()
+    def dequeue(self, timeout=None):
+        try:
+            return self.jobs.get(timeout != None, timeout)
+        except queue.Empty:
+            return None
 
-    def mark_done(self, job):
-        pass
-
-    def enqueue_list(self, jobs):
-        for j in jobs:
-            self.enqueue(j)
+    def iter(self):
+        return iter(self.dequeue, None)

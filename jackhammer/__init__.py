@@ -1,3 +1,2 @@
-from .scheduler import Scheduler
-from .job import Job, JobConfig, JobState
-from .jobQueue import JobQueue
+from jackhammer.scheduler import Scheduler
+from jackhammer.job import Job, JobState

@@ -4,49 +4,50 @@ import threading
 import time
 
 # Package libraries
-from .runner import Runner
-from .job import Job, JobState
-from .jobQueue import JobQueue
+from jackhammer.worker import Worker, WorkerStatus
+from jackhammer.job import Job, JobState
+from jackhammer.jobQueue import JobQueue
 
 class Scheduler(threading.Thread):
     """
-    Scheduler to launch and manage runners.
+    Scheduler to launch and manage workers.
 
     Uses very basic scheduling behaviour with limited understanding
     of dependencies. Complicated job structures may bring it to
     failure.
     """
-    name = "jackhammer.scheduler"
-    maxInfraFailures = 3
 
-    def __init__(self,
-                 provider,
-                 queue=JobQueue(),
-                 pollDelay=2,
-                 cleanupTimeout=240,
-                 maxRunners=5):
+    def __init__(self, provider, config):
         threading.Thread.__init__(self)
+        self.name = "jackhammer.scheduler"
         self.logger = logging.getLogger(self.name)
 
         # Threading
         self.shutdown_flag = threading.Event()
-        self.jobs = queue
-
-        # Config
-        self.provider = provider
-        self.pollDelay = pollDelay
-        self.cleanupTimeout = cleanupTimeout
-        self.maxRunners = maxRunners
+        self.pending = JobQueue()
+        self.ready = JobQueue()
+        self.completed = JobQueue()
 
         # State
-        self.runners = []
-        self.infraFailures = 0
+        self.workers = []
+        self.provider = provider
+        self.config = config
+        self.failureRate = 0
 
     def add_job(self, job):
         """
-        Simple function to wrap accesses to the job queue.
+        Simple function to add a new job to the pending queue.
+        Its state must be pending.
         """
-        self.jobs.enqueue(job)
+        assert job.state == JobState.Pending
+        self.pending.enqueue(job)
+
+    def add_jobs(self, jobs):
+        """
+        Wrapper around add_job for a list.
+        """
+        for j in jobs:
+            self.add_job(j)
 
     def shutdown(self):
         """
@@ -59,104 +60,125 @@ class Scheduler(threading.Thread):
     # Internal Functions
     def run(self):
         """
+        Thread entry point.
         Run the job scheduler, which will spin up machines
         and ensure they are cleaned up.
-
-        Thread entry point.
+        
+        In the event of failure, all remaining workers are given
+        some time to clean up, with a forced clean up through the
+        machine provider.
         """
+        self.logger.info("Launching")
+        self.provider.thread_init()
+
         try:
-            self.logger.debug("Launching " + self.name)
             self.scheduler_loop()
         except Exception as e:
-            self.logger.error("Failure in scheduler loop: " + str(e))
+            self.logger.error("Failure in Scheduler loop: %s", str(e))
             self.shutdown()
-        finally:
-            # Try to join all remaining threads
-            for runner in self.runners:
-                runner.join(timeout=self.cleanupTimeout)
 
-            # Cleanup any left over machines
-            self.provider.create().delete_all_machines()
-
-    def launch_job(self, job):
-        """
-        Launch a runner with the provided job.
-        """
-        job.set_shutdown(self.shutdown_flag)
-        r = Runner(job, self.provider.create())
-        self.runners.append(r)
-        r.start()
-
-    def cleanup_job(self, job):
-        """
-        Clean up a job, with logic to manage different results.
-
-        Runs the jobs postlaunch behaviour and schedules any new
-        jobs. This includes rescheduling any failures.
-        """
-        # Add any new jobs
-        newJobs = job.postlaunch()
-        self.jobs.enqueue_list(newJobs)
-        for j in newJobs:
-            j.state = JobState.Queued
-
-        # Log the result of the job
-        if job.state == JobState.Completed:
-            self.logger.debug("Finishing job: %s" % job)
-            self.jobs.mark_done(job)
-        elif job.state == JobState.Failed:
-            if job in newJobs:
-                self.logger.error("Reattempting job: %s" % job)
-            else:
-                self.logger.error("Failing job: %s" % job)
-            self.jobs.mark_done(job)
-            
-    def infra_failure(self, runner):
-        """
-        Handle infrastructure failures, encoutered by the runner.
-
-        Certain failures are ignored, to a limit. Others are
-        considered terminal, as they will likely fail multiple
-        jobs.
-        """
-        self.logger.error("Infrastructure failure: %s" % runner)
-
-        if runner.failure.repeat() and self.infraFailures < self.maxInfraFailures:
-            self.infraFailures += 1
-            self.logger.debug("Restarting job %s" % runner.job)
-            self.launch_job(runner.job)
-        else:
-            self.logger.error("Too many infrastructure failures, shutting down")
-            self.shutdown()
+        for worker in self.workers:
+            worker.join(timeout=self.config['joinTimeout'])
+            if worker.is_alive():
+                self.logger.error("Failed to join worker: %s", worker)
+        self.provider.cleanup_machines()
+        self.logger.info("Stopping")
 
     def scheduler_loop(self):
         """
-        The scheduler loop, which pulls and launches pending jobs.
+        The scheduler loop, which manages job and worker life
+        cycles.
         """
         while not self.shutdown_flag.is_set():
-            # Grab a job and launch if desired
-            popped = []
-            while not self.jobs.empty() and len(self.runners) < self.maxRunners:
-                job = self.jobs.dequeue()
-                job.prelaunch()
-                if job.state == JobState.Queued:
-                    popped.append(job)
-                elif job.state == JobState.Executing:
-                    self.launch_job(job)
+            # Check for completed jobs, adding new jobs as pending
+            for job in self.completed.iter():
+                self.add_jobs(job.postlaunch())
+
+            # Promote pending jobs to ready
+            pending = []
+            for job in self.pending.iter():
+                pending.extend(self.prepare_job(job))
+            self.add_jobs(pending)
+
+            # Check for any finished workers
+            for worker in self.workers:
+                if not worker.is_alive():
+                    worker.join()
+                    self.cleanup_worker(worker)
+
+            # Launch new workers if not at limit
+            while len(self.workers) < self.config['maxWorkers']:
+                job = self.ready.dequeue()
+                if job == None:
                     break
-                else:
-                    self.cleanup_job(job)
-            self.jobs.enqueue_list(popped)
+                self.prepare_worker(job)
 
-            # Manage running jobs
-            for runner in self.runners:
-                if not runner.is_alive():
-                    runner.join()
-                    self.runners.remove(runner)
-                    if not runner.failed():
-                        self.cleanup_job(runner.job)
-                    else:
-                        self.infra_failure(runner)
+            # Deadlock check
+            assert len(self.workers) > 0 or self.ready.empty()
 
-            # Delay
-            time.sleep(self.pollDelay)
+            # Rate limiting
+            time.sleep(self.config['loopDelay'])
+
+    # Worker Life Cycle
+    def prepare_worker(self, job):
+        """
+        Prepare and start a worker, with an initial job.
+        """
+        r = Worker(job, self.worker_cycle_jobs, self.provider)
+        self.workers.append(r)
+        r.start()
+
+    def worker_cycle_jobs(self, job):
+        """
+        Callback for workers to return a job and get a one job.
+
+        TODO: The delay here costs money and results in inconsistent
+              behaviour. Find a better way.
+              Best thing to do is likely to process the completed job here
+              and consider any of its children.
+        """
+        self.completed.enqueue(job)
+        if self.shutdown_flag.is_set():
+            job = None
+        else:
+            job = self.ready.dequeue(timeout=self.config['readyTimeout'])
+
+        self.logger.debug("Allocating job: %s", job)
+        return job
+
+    def cleanup_worker(self, worker):
+        """
+        Handle worker termination, checking for infrastructure failures
+        and shutting down the scheduler if sufficiently troublesome.
+        """
+        self.workers.remove(worker)
+        if worker.status == WorkerStatus.Success:
+            assert worker.job == None, "Worker with job claiming success"
+        elif worker.status == WorkerStatus.Failure:
+            self.failureRate += 1
+            self.logger.warning("Worker failure %d: %s", self.failureRate, worker.msg)
+            if worker.job != None:
+                worker.job.reset()
+                self.pending.enqueue(worker.job)
+        else:
+            self.logger.error("Worker shutdown: %s", worker.msg)
+            self.shutdown()
+
+    # Job Life Cycle
+    def prepare_job(self, job):
+        """
+        Prepare the job for launch. Calls the prelaunch function to
+        determine an initial job state and acts accordingly.
+
+        Returns a list of jobs to place on the pending queue.
+        """
+        job.prelaunch()
+        if job.state == JobState.Pending:
+            return [job]
+        elif job.state == JobState.Ready:
+            job.set_shutdown(self.shutdown_flag)
+            self.ready.enqueue(job)
+            return []
+        elif job.state == JobState.Completed:
+            return job.postlaunch()
+        assert False, "Invalid post-prelaunch state: %s" % job.state

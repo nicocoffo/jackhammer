@@ -7,5 +7,5 @@ setup(name='jackhammer',
       author='Nicholas Coughlin',
       author_email='nicocoffo@gmail.com',
       license='MIT',
-      packages=['jackhammer', 'jackhammer.cloud_providers'],
+      packages=['jackhammer', 'jackhammer.cloud'],
       zip_safe=False)

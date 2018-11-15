@@ -9,21 +9,12 @@ import re
 # Additional libraries
 from paramiko import SFTPClient
 
-DEFAULT_TIMEOUT=(60 * 60 * 12)
-
 # Job States
 class JobState(Enum):
-    Queued    = "Queued"
+    Pending   = "Pending"
+    Ready     = "Ready"
     Executing = "Executing"
     Completed = "Completed"
-    Failed    = "Failed"
-
-class JobConfig:
-    def __init__(self, attempts=3, connection={}, machine={}, files=[]):
-        self.connection = connection
-        self.machine = machine
-        self.files = files
-        self.attempts = attempts
 
 class Job:
     def __init__(self, config, prereqs=[]):
@@ -38,7 +29,7 @@ class Job:
         self.cmd = ""
 
         # State
-        self.state = JobState.Queued
+        self.state = JobState.Pending
         self.attempt = 0
 
         # Relations to other jobs
@@ -46,6 +37,7 @@ class Job:
         self.siblings = []
 
         # Results
+        self.result = -1
         self.response = ""
 
     def __repr__(self):
@@ -57,76 +49,87 @@ class Job:
     def set_shutdown(self, shutdown):
         self.shutdown = shutdown
 
+    def reset(self):
+        self.state = JobState.Pending
+        self.stdout = ''
+        self.stderr = ''
+
     def prelaunch(self):
         """
         Called when the job is dequeued and inspected before
         spinning up resources. Allows for it to be avoided,
         in the event that siblings or prereqs would prevent it.
         """
-        siblings = [j.state for j in self.siblings]
-        prereqs = [j.state for j in self.prereqs]
+        assert self.state == JobState.Pending 
 
-        if JobState.Failed in siblings:
-            # Check if any siblings have already failed
-            self.state = JobState.Failed
-        elif JobState.Queued in prereqs or JobState.Executing in prereqs:
-            # Check if any prereqs are still waiting
-            self.state = JobState.Queued
-        else:
-            # Prepare for launch
-            self.state = JobState.Executing
-            self.prelaunch_hook()
+        # If any siblings have already failed, bail out
+        for j in self.siblings:
+            if j.state == JobState.Completed and j.result > 0:
+                self.state = JobState.Completed
+                self.result = -1
+                self.response = "SIBLING"
+                return 
+
+        # Leave as pending if any prereqs not completed
+        for j in self.prereqs:
+            if j.state != JobState.Completed:
+                self.state = JobState.Pending
+                return
+
+        # Prepare for launch
+        self.state = JobState.Ready
+        self.prelaunch_hook()
 
     def launch(self, client):
         """
         Connect to the provided client.
         """
-        # If prelaunch has run, state should be configured
-        if self.state != JobState.Executing:
-            raise Exception("Unexpected prelaunch state: %s" % self.state)
+        self.logger.info("Launching job: %s", self)
 
-        # Send all the necessary files, based on config
+        assert self.state == JobState.Ready
+        self.state = JobState.Executing
+
         try:
             self.sendFiles(client)
         except Exception as e:
             self.logger.error("Failed to send files: %s" % str(e))
-            self.state = JobState.Failed
+            self.state = JobState.Completed
+            self.result = 1
             return
 
-        # Run the command
         try:
             self.runCommand(client)
         except Exception as e:
             self.logger.error("Failed to run cmd: " + str(e))
-            self.state = JobState.Failed
+            self.state = JobState.Completed
+            self.result = 1
 
     def postlaunch(self):
         """
         Interpret results of execution.
         Returns a list of jobs to schedule, which can include self.
         """
-        # Call the hook based on the job state
-        if self.state == JobState.Completed:
+        self.logger.info("Stopping job: %s", self)
+
+        assert self.state == JobState.Completed
+
+        if self.result == 0:
             return self.completed_hook()
-        elif self.state == JobState.Failed:
-            self.logger.info("STDOUT: %s", self.stdout)
-            self.logger.info("STDERR: %s", self.stderr)
-            if self.response == "PREEMPTED":
-                if self.attempt < self.config.attempts:
-                    self.attempt += 1
-                    return [self]
+        elif self.result == -1:
+            if self.attempt < self.config['attempts']:
+                self.attempt += 1
+                return [self]
             return self.failed_hook()
         else:
-            raise Exception("Unexpected postlaunch state: %s" % self.state)
+            return self.failed_hook()
 
     def sendFiles(self, client):
         """
         Send the script to the remote machine.
-        Issues: Need to implement a timeout.
         """
         sftp = SFTPClient.from_transport(client.get_transport())
-        for (src, dst) in self.config.files:
-            self.logger.info("Sending file %s -> %s" % (src, dst))
+        for (src, dst) in self.config['files']:
+            self.logger.debug("Sending file %s -> %s" % (src, dst))
             sftp.put(src, dst)
         sftp.close()
 
@@ -157,10 +160,11 @@ class Job:
     def shouldShutdown(self, channel):
         if channel != None and channel.exit_status_ready():
             return True
-        if self.state in [JobState.Completed, JobState.Failed]:
+        if self.state == JobState.Completed:
             return True
         if self.shutdown != None and self.shutdown.is_set():
-            self.state = JobState.Failed
+            self.state = JobState.Completed
+            self.result = -1
             self.response = "SHUTDOWN"
             return True
 
@@ -169,22 +173,19 @@ class Job:
         Collect the commands result, either by interpreting known
         values in the results or based on its return status.
         """
-        if self.state in [JobState.Completed, JobState.Failed]:
-            self.logger.info("Got job result from comms: %s %s", self.state, self.response)
+        if self.state == JobState.Completed:
+            self.logger.debug("Got job result from comms: %s %s", self.result, self.response)
         else:
-            status = channel.recv_exit_status()
-            if status == 0:
-                self.logger.info("Server returned a zero status, completed")
-                self.response = ""
-                self.state = JobState.Completed
-                return
-            elif status == -1:
+            self.state = JobState.Completed
+            self.response = ""
+            self.result = channel.recv_exit_status()
+            if self.result == 0:
+                self.logger.debug("Server returned a zero status, completed")
+            elif self.result == -1:
                 self.logger.error("Server did not return a status, failed")
                 self.response = "PREEMPTED"
             else:
-                self.logger.error("Server return non-zero status: %d", status)
-                self.response = str(status)
-            self.state = JobState.Failed
+                self.logger.error("Server return non-zero status: %d", self.result)
 
     def collect_output(self, channel, lastLine, final=False):
         """
@@ -194,7 +195,7 @@ class Job:
             l = channel.recv(128).decode('ascii', errors="ignore")
             lines = l.split('\n')
             lines[0] = lastLine + lines[0]
-            lastLine = '' if len(lines) == 1 else lines[-1]
+            lastLine = lines[-1]
             for line in (lines if final else lines[:-1]):
                 self.parse_output_line(line)
                 self.stdout += line + '\n'
@@ -204,15 +205,16 @@ class Job:
         return lastLine
 
     def parse_output_line(self, line):
-        prefix = [JobState.Executing, JobState.Completed, JobState.Failed]
-        for s in [e.name for e in prefix]:
+        prefix = ["Executing", "Completed", "Failed"]
+        for s in prefix:
             r = "^%s(.*)" % s
             if re.search(r, line):
                 response = re.search(r, line).group(1).strip()
-                self.state = JobState(s)
-                if self.state in [JobState.Completed, JobState.Failed]:
+                if s in ["Completed", "Failed"]:
+                    self.state = JobState.Completed
+                    self.result = 0 if s == "Completed" else 1
                     self.response = response
-                self.logger.info("%s: %s" % (self.state, response))
+                self.logger.debug("%s: %s" % (self.state, response))
                 return
         self.parse_hook(line)
 
