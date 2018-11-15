@@ -1,29 +1,30 @@
 # Standard Python libraries
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import logging
 import threading
 import time
 
 # Package libraries
 from .runner import Runner
-from .job import Job, JobQueue
-
-MAX_INDEX = 99999
+from .job import Job, JobState
+from .jobQueue import JobQueue
 
 class Scheduler(threading.Thread):
     """
-    Launches the server and runner threads.
+    Scheduler to launch and manage runners.
+
+    Uses very basic scheduling behaviour with limited understanding
+    of dependencies. Complicated job structures may bring it to
+    failure.
     """
     name = "jackhammer.scheduler"
     maxInfraFailures = 3
 
     def __init__(self,
                  provider,
-                 job_generator,
                  queue=JobQueue(),
-                 port=9321,
-                 pollDelay=0.5,
-                 cleanupTimeout=10):
+                 pollDelay=2,
+                 cleanupTimeout=240,
+                 maxRunners=5):
         threading.Thread.__init__(self)
         self.logger = logging.getLogger(self.name)
 
@@ -33,22 +34,35 @@ class Scheduler(threading.Thread):
 
         # Config
         self.provider = provider
-        self.job_generator = job_generator
-        self.port = port
         self.pollDelay = pollDelay
         self.cleanupTimeout = cleanupTimeout
+        self.maxRunners = maxRunners
 
         # State
         self.runners = []
         self.infraFailures = 0
-        self.index = 0
 
-        # Server
-        self.server = self.create_job_server() if self.port != None else None
+    def add_job(self, job):
+        """
+        Simple function to wrap accesses to the job queue.
+        """
+        self.jobs.enqueue(job)
 
+    def shutdown(self):
+        """
+        Stop the scheduler, cancelling any ongoing jobs.
+        Any jobs that did not finish will have their failure
+        hooks called, with a SHUTDOWN response.
+        """
+        self.shutdown_flag.set()
+
+    # Internal Functions
     def run(self):
         """
-        Run the job scheduler.
+        Run the job scheduler, which will spin up machines
+        and ensure they are cleaned up.
+
+        Thread entry point.
         """
         try:
             self.logger.debug("Launching " + self.name)
@@ -60,67 +74,59 @@ class Scheduler(threading.Thread):
             # Try to join all remaining threads
             for runner in self.runners:
                 runner.join(timeout=self.cleanupTimeout)
-                runner.job.failure_cleanup()
 
             # Cleanup any left over machines
             self.provider.create().delete_all_machines()
-
-    def shutdown(self):
-        """
-        Stop the machine banger, cancelling any ongoing jobs
-        """
-        self.shutdown_flag.set()
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def launch_job(self, job):
         """
         Launch a runner with the provided job.
         """
+        job.set_shutdown(self.shutdown_flag)
         r = Runner(job, self.provider.create())
         self.runners.append(r)
         r.start()
 
-    def create_jobs(self, post):
-        try:
-            jobs = self.job_generator(post, self.index)
-            self.index += 1
-            if self.index > MAX_INDEX:
-                self.index = 0
-            return jobs
-        except Exception as e:
-            self.logger.error("Failed to create jobs: " + str(e))
-            return []
-
     def cleanup_job(self, job):
         """
         Clean up a job, with logic to manage different results.
-        """
-        if job.completed():
-            self.logger.info("Finishing job: %s" % job)
-            self.jobs.mark_done(job)
-            job.success_cleanup()
-        elif job.repeat():
-            self.logger.info("Restarting job %s" % job)
-            self.launch_job(job)
-        else:
-            self.logger.error("Giving up on job: %s" % job)
-            job.failure_cleanup()
-            self.shutdown()
 
+        Runs the jobs postlaunch behaviour and schedules any new
+        jobs. This includes rescheduling any failures.
+        """
+        # Add any new jobs
+        newJobs = job.postlaunch()
+        self.jobs.enqueue_list(newJobs)
+        for j in newJobs:
+            j.state = JobState.Queued
+
+        # Log the result of the job
+        if job.state == JobState.Completed:
+            self.logger.debug("Finishing job: %s" % job)
+            self.jobs.mark_done(job)
+        elif job.state == JobState.Failed:
+            if job in newJobs:
+                self.logger.error("Reattempting job: %s" % job)
+            else:
+                self.logger.error("Failing job: %s" % job)
+            self.jobs.mark_done(job)
+            
     def infra_failure(self, runner):
         """
         Handle infrastructure failures, encoutered by the runner.
+
+        Certain failures are ignored, to a limit. Others are
+        considered terminal, as they will likely fail multiple
+        jobs.
         """
         self.logger.error("Infrastructure failure: %s" % runner)
 
-        # TODO: Better measure of infra failures (rate? region?)
-        if runner.repeat() and self.infraFailures < self.maxInfraFailures:
+        if runner.failure.repeat() and self.infraFailures < self.maxInfraFailures:
             self.infraFailures += 1
-            self.logger.info("Restarting job %s" % runner.job)
+            self.logger.debug("Restarting job %s" % runner.job)
             self.launch_job(runner.job)
         else:
             self.logger.error("Too many infrastructure failures, shutting down")
-            runner.job.infra_cleanup()
             self.shutdown()
 
     def scheduler_loop(self):
@@ -129,12 +135,18 @@ class Scheduler(threading.Thread):
         """
         while not self.shutdown_flag.is_set():
             # Grab a job and launch if desired
-            while not self.jobs.empty():
-                jobs = self.create_jobs(self.jobs.dequeue())
-                for job in jobs:
+            popped = []
+            while not self.jobs.empty() and len(self.runners) < self.maxRunners:
+                job = self.jobs.dequeue()
+                job.prelaunch()
+                if job.state == JobState.Queued:
+                    popped.append(job)
+                elif job.state == JobState.Executing:
                     self.launch_job(job)
-                if len(jobs) > 0:
                     break
+                else:
+                    self.cleanup_job(job)
+            self.jobs.enqueue_list(popped)
 
             # Manage running jobs
             for runner in self.runners:
@@ -148,37 +160,3 @@ class Scheduler(threading.Thread):
 
             # Delay
             time.sleep(self.pollDelay)
-
-    def create_job_server(self):
-        """
-        Create a server to receive new jobs, as JSON POSTs.
-        Also implements a basic health check via GET.
-        """
-        queue = self.jobs
-
-        class JobServer(BaseHTTPRequestHandler):
-
-            def _set_headers(self):
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-
-            def do_POST(self):
-                """
-                Recieve new jobs as POST
-                """
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)
-                queue.enqueue(post_data)
-                self._set_headers()
-
-            def do_GET(self):
-                """
-                Health checks over GET
-                """
-                self._set_headers()
-                return bytes("", 'UTF-8')
-
-        server = HTTPServer(('', self.port), JobServer)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        return server

@@ -86,8 +86,8 @@ class GCP:
         return None
 
     def _create(self, sshkey, name, wait=False):
-        image_response = self.compute.images().getFromFamily(
-            project='ubuntu-os-cloud', family='ubuntu-1804-lts').execute()
+        image_response = self.compute.images().get(
+            project=self.project, image='media-image-2').execute()
         source_disk_image = image_response['selfLink']
 
         # Configure the machine
