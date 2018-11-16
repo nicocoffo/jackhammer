@@ -83,6 +83,3 @@ class Worker(threading.Thread):
         if out != ["test\n"]:
             raise CloudPreempt
         return True
-
-    def __repr__(self):
-        return self.name

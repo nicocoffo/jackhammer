@@ -13,7 +13,6 @@ from paramiko import SFTPClient
 class JobState(Enum):
     Pending   = "Pending"
     Ready     = "Ready"
-    Executing = "Executing"
     Completed = "Completed"
 
 class Job:
@@ -85,9 +84,7 @@ class Job:
         Connect to the provided client.
         """
         self.logger.info("Launching job: %s", self)
-
         assert self.state == JobState.Ready
-        self.state = JobState.Executing
 
         try:
             self.sendFiles(client)

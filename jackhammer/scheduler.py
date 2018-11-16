@@ -106,12 +106,11 @@ class Scheduler(threading.Thread):
                     worker.join()
                     self.cleanup_worker(worker)
 
-            # Launch new workers if not at limit
-            while len(self.workers) < self.config['maxWorkers']:
+            # Launch a new worker if not at limit
+            if len(self.workers) < self.config['maxWorkers']:
                 job = self.ready.dequeue()
-                if job == None:
-                    break
-                self.prepare_worker(job)
+                if job != None:
+                    self.prepare_worker(job)
 
             # Deadlock check
             assert len(self.workers) > 0 or self.ready.empty()
