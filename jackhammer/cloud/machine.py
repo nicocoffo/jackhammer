@@ -1,11 +1,19 @@
 import paramiko
 import time
 
-class CloudCreate(Exception):
-    def __init__(self):
-        super().__init__("Cannot create cloud machine")
+
+class MachineException(Exception):
+    """
+    """
+
+    def __init__(self, msg):
+        super().__init__("Cannot create cloud machine: %s" % msg)
+
 
 class Machine:
+    """
+    """
+
     def __init__(self, name, create, config):
         # Args
         self.name = name
@@ -24,8 +32,9 @@ class Machine:
         self.create = create
 
     def __enter__(self):
-        # Create the machine
+        msg = ""
         try:
+            # Create the machine
             self.machine = self.create(self.name, self.public)
             ip = self.machine.public_ips[0]
 
@@ -34,18 +43,22 @@ class Machine:
             while i < self.config['attempts']:
                 try:
                     self.client = paramiko.client.SSHClient()
-                    self.client.set_missing_host_key_policy(paramiko.client.AutoAddPolicy())
-                    self.client.connect(ip, username=self.config['username'], pkey=self.private)
+                    self.client.set_missing_host_key_policy(
+                        paramiko.client.AutoAddPolicy())
+                    self.client.connect(
+                        ip, username=self.config['username'], pkey=self.private)
                     return self.client
                 except Exception as e:
+                    msg = str(e)
                     time.sleep(self.config['delay'])
                     i += 1
         except Exception as e:
-            pass
+            msg = str(e)
+
         # Cleanup if connection failed
         if self.machine:
             self.machine.destroy()
-        raise CloudCreate
+        raise CloudCreate(msg)
 
     def __exit__(self, exc_type, exc_value, tb):
         try:

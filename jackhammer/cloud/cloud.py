@@ -3,15 +3,14 @@ import uuid
 from jackhammer.cloud.machine import Machine
 
 class Cloud:
+    """
+    Wrapper around libcloud's NodeDriver to allow for the
+    creation of machines.
+    """
+
     def __init__(self, config):
         self.config = config
         self.uuid = str(uuid.uuid4())
-
-    def thread_init(self):
-        """
-        Drivers might not be thread safe.
-        """
-        pass
 
     def create_client(self, name):
         """
