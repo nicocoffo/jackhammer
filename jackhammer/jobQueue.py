@@ -1,5 +1,6 @@
 # Standard Python libraries
-import queue
+from queue import Queue, Empty
+
 
 class JobQueue:
     """
@@ -8,7 +9,7 @@ class JobQueue:
     """
 
     def __init__(self):
-        self.jobs = queue.Queue()
+        self.jobs = Queue()
 
     def empty(self):
         return self.jobs.empty()
@@ -19,7 +20,7 @@ class JobQueue:
     def dequeue(self, timeout=None):
         try:
             return self.jobs.get(timeout != None, timeout)
-        except queue.Empty:
+        except Empty:
             return None
 
     def iter(self):

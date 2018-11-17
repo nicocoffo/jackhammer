@@ -2,6 +2,7 @@ import uuid
 
 from jackhammer.cloud.machine import Machine
 
+
 class Cloud:
     """
     Wrapper around libcloud's NodeDriver to allow for the

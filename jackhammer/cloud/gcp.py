@@ -1,8 +1,12 @@
+import logging
+
 from jackhammer.cloud.cloud import Cloud
 
 # libcloud
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
+
+logger = logging.getLogger("jackhammer.cloud")
 
 
 class GCP(Cloud):
@@ -13,6 +17,7 @@ class GCP(Cloud):
 
     def __init__(self, config):
         super().__init__(config)
+        logger.debug("Creating GCP node driver")
         self.compute = get_driver(Provider.GCE)
         self.driver = self.compute(
             self.config['email'],
@@ -20,6 +25,7 @@ class GCP(Cloud):
             project=self.config['project'])
 
     def create_machine(self, name, key):
+        logger.debug("Creating GCP node")
         node = self.config['node']
         metadata = node['metadata'] if 'metadata' in node else {}
         metadata['ssh-keys'] = key

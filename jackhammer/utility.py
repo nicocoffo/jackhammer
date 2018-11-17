@@ -1,5 +1,6 @@
 import time
 import re
+import socket
 from paramiko import SFTPClient
 
 
@@ -19,35 +20,40 @@ def collect_output(channel, stdout, stderr):
     Helper for run_command to collect bytes from the channel's
     stdout and stderr.
     """
-    while channel.recv_ready():
-        stdout += channel.recv(1).decode('ascii', errors="ignore")
-    while channel.recv_stderr_ready():
-        stderr += channel.recv_stderr(1).decode('ascii', errors="ignore")
-    return stdout, stderr
+    try:
+        while channel.recv_ready() and stdout:
+            stdout(channel.recv(512).decode('ascii', errors="ignore"))
+    except socket.timeout:
+        pass
+
+    try:
+        while channel.recv_stderr_ready() and stderr:
+            stderr(channel.recv_stderr(512).decode('ascii', errors="ignore"))
+    except socket.timeout:
+        pass
 
 
-def run_command(client, cmd, shutdown):
+def run_command(client, cmd, shutdown, stdout=None, stderr=None):
     """
-    Run a command on a remote client, collecting the
-    return status, stdout and stderr. Also support a shutdown flag
-    to perform an early disconnection.
+    Run a command on a remote client and get the return status.
+    stdout and stderr can be processed using the callbacks.
+    A shutdown flag allows for early disconnection.
     """
     transport = client.get_transport()
     channel = transport.open_session()
+    channel.setblocking(0)
     channel.exec_command(cmd)
 
     # Results
-    stdout = ''
-    stderr = ''
     code = None
 
     # Loop to capture results
     while not shutdown.is_set() and not channel.exit_status_ready():
-        stdout, stderr = collect_output(channel, stdout, stderr)
+        collect_output(channel, stdout, stderr)
         time.sleep(1)
 
     # Get last of the output and code if available
-    stdout, stderr = collect_output(channel, stdout, stderr)
+    collect_output(channel, stdout, stderr)
     code = channel.recv_exit_status() if channel.exit_status_ready() else -1
     channel.close()
-    return code, stdout, stderr
+    return code

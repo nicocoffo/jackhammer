@@ -1,154 +1,147 @@
 # Standard Python libraries
-from enum import Enum
-import logging
+from enum import Flag, auto
+from logging import getLogger
 
-# SSH Utilities
+# Package libraries
 from jackhammer.utility import send_files, run_command
 
-# Job States - Stages of progress the job goes through
-class JobState(Enum):
-    Pending   = 0
-    Ready     = 1
-    Completed = 2
+logger = getLogger("jackhammer")
 
-# Job Status - The result of the job
-class JobStatus(Enum):
-    Unknown           = 0
-    Success           = 1
-    ScriptFailure     = 2
-    DependencyFailure = 3
-    Disconnection     = 4
+
+class JobState(Flag):
+    Pending = auto()
+    Ready = auto()
+    Success = auto()
+    Disconnection = auto()
+    Failure = auto()
+    Complete = Success | Disconnection | Failure
+
 
 class Job:
+    """
+    Description of a job.
+    Sends a series of files to the remote machine and executes a command.
+    """
+
     def __init__(self, config, prereqs=[]):
-        """
-        """
-        self.logger = logging.getLogger("jackhammer.job")
+        # Args
         self.config = config
+        self.prereqs = prereqs
 
         # State
-        self.name = ""
-        self.cmd = ""
-        self.attempts = 0
+        self.name = ''
+        self.cmd = ''
+        self.resetCount = -1
         self.reset()
 
-        # Relations to other jobs
-        self.prereqs = prereqs
-        self.siblings = []
-
-    def set_siblings(self, siblings):
-        self.siblings = siblings
-
-    def set_status(self, status, msg=""):
-        self.state = JobState.Completed
-        self.status = status
-        if msg != "":
-            self.stderr += "\n" + msg + "\n"
-
     def reset(self):
+        """
+        Reset the job's state, such as its logs and exception.
+        """
         self.state = JobState.Pending
-        self.status = JobStatus.Unknown
-        self.stderr = ""
-        self.stdout = ""
-
-    def failed(self):
-        return self.state == JobState.Completed and \
-                self.status != JobStatus.Success
+        self.stderr = ''
+        self.stdout = ''
+        self.exception = None
+        self.resetCount += 1
 
     def retry(self):
-        return self.status == JobStatus.Disconnection and \
-                self.attempts < self.config['maxAttempts']
+        """
+        Determine if the job should be retried if it ended with
+        a state other than success.
+        """
+        return self.state == JobState.Disconnection and \
+                self.resetCount < self.config['maxAttempts']
 
     def prepare(self):
         """
-        Called from the scheduler thread to promote a job from
-        Pending to Ready. Can skip execution entirely, based
+        Called by the scheduler thread to promote a job 
+        to Ready. Can skip execution entirely, based
         on dependencies.
         """
-        assert self.state == JobState.Pending 
-
-        # If any siblings have already failed, bail out
-        for j in self.siblings:
-            if j.failed():
-                self.set_status(JobStatus.DependencyFailure)
-                return 
+        assert self.state == JobState.Pending
 
         # Leave as pending if any prereqs not completed
         for j in self.prereqs:
-            if j.state != JobState.Completed:
-                self.state = JobState.Pending
+            if not (j.state & JobState.Complete):
                 return
 
         # Prepare for execution
         self.state = JobState.Ready
-        self.prepare_hook()
 
-    def execute(self, client, shutdown):
+    def execute(self, client, shutdown_flag):
         """
         Called from the assigned worker thread with a connection
         to a remote machine. Performs the actual job, first sending
         files and then executing the command.
         """
-        self.logger.info("Launching job: %s", self)
+        logger.info("Job Launch: %s", self)
         assert self.state == JobState.Ready
 
         try:
             send_files(client, self.config['files'])
         except Exception as e:
-            self.set_status(JobStatus.Unknown, str(e))
+            self.state = JobState.Failure
+            self.exception = e
             return
 
         try:
-            code, self.stdout, self.stderr = \
-                    run_command(client, self.cmd, shutdown)
+            code = run_command(client, self.cmd, shutdown_flag,
+                               self.process_stdout, self.process_stderr)
             if code == 0:
-                self.set_status(JobStatus.Success)
+                self.state = JobState.Success
             elif code == -1:
-                self.set_status(JobStatus.Disconnection)
+                self.state = JobState.Disconnection
             else:
-                self.set_status(JobStatus.ScriptFailure)
+                self.state = JobState.Failure
         except Exception as e:
-            self.set_status(JobStatus.Unknown, str(e))
+            self.state = JobState.Failure
+            self.exception = e
 
     def cleanup(self):
         """
         Called from the scheduler thread to cleanup any completed
         jobs. 
         """
-        self.logger.info("Cleaning up job: %s", self)
-        assert self.state == JobState.Completed
+        assert self.state & JobState.Complete, \
+                "Cleanup attempted on incomplete job: %s" % self
 
-        if self.status == JobStatus.Success:
-            return self.success_hook()
+        if self.state == JobState.Success:
+            logger.debug("Job Cleanup: %s", self)
+            return self.success()
         elif self.retry():
-            self.logger.warning("Job retry: %s %s", self, self.status)
-            self.attempts += 1
+            logger.warning("Job Retry: %s", self)
             self.reset()
             return [self]
         else:
-            self.logger.error("Job failed: %s %s", self, self.status)
-            self.logger.debug("STDOUT:\n%s", self.stdout)
-            self.logger.debug("STDERR:\n%s", self.stderr)
-            return self.failure_hook()
+            self.state = JobState.Failure
+            logger.error("Job Failed: %s %s", self, self.state)
+            logger.debug("STDOUT:\n%s", self.stdout)
+            logger.debug("STDERR:\n%s", self.stderr)
+            return self.failure()
 
-    # Hooks
-    def prepare_hook(self):
+    def success(self):
         """
-        Hook called during prepare.
-        """
-        pass
-
-    def success_hook(self):
-        """
-        Hook called during cleanup for a successful job.
+        Called during cleanup for a successful job.
         """
         return []
 
-    def failure_hook(self):
+    def failure(self):
         """
-        Hook called during cleanup.
+        Called during cleanup for a failed job.
         """
         return []
+
+    def process_stdout(self, stdout):
+        """
+        Callback for processing stdout chunks from the command.
+        """
+        self.stdout += stdout
+
+    def process_stderr(self, stderr):
+        """
+        Callback for processing stderr chunks from the command.
+        """
+        self.stderr += stderr
 
     def __repr__(self):
         return self.name

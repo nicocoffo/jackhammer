@@ -1,45 +1,39 @@
 # Standard Python libraries
-import logging
-import threading
-import time
-import uuid
 from enum import Enum
+from threading import Thread
+from time import time
+from uuid import uuid4
+from logging import getLogger
 
-from jackhammer.cloud import CloudCreate
+logger = getLogger("jackhammer")
 
-class WorkerStatus(Enum):
-    Success  = 0
-    Failure  = 1
-    Shutdown = 2
 
-class Disconnection(Exception):
-    def __init__(self):
-        super().__init__("Machine disconnected")
-
-class Worker(threading.Thread):
+class Worker(Thread):
     """
     Worker corresponding to a remote machine.
-    May run several jobs over its life time.
-    """
-    DONE_MSG = "No remaining jobs, scaling down"
-    PRE_MSG = "Machine was pre-empted"
-    CREATE_MSG = "Unable to create machine"
-    ERR_MSG = "Exception in worker loop: %s"
 
-    def __init__(self, job, cycle_jobs, provider, shutdown):
-        threading.Thread.__init__(self)
-        self.name = "worker-" + str(uuid.uuid4())[:16]
-        self.logger = logging.getLogger(self.name)
+    Thread should remain alive at least as long as a connection to the
+    remote machine is possible or the shutdownFlag is set.
+
+    Will attempt to run several jobs over its lifetime, using the callbacks
+    to get and return jobs.
+
+    The thread will measure the duration the machine was available and capture
+    any exceptions.
+    """
+
+    def __init__(self, get_job, return_job, provider, shutdownFlag, name=None):
+        Thread.__init__(self)
+        self.name = name if name else "worker-" + str(uuid4())[:16]
+        self.exception = None
+        self.duration = None
+        self.begin = None
 
         # Args
-        self.job = job
-        self.cycle_jobs = cycle_jobs
+        self.get_job = get_job
+        self.return_job = return_job
         self.provider = provider
-        self.shutdown = shutdown
-
-        # State
-        self.status = None
-        self.msg = ""
+        self.shutdownFlag = shutdownFlag
 
     def run(self):
         """
@@ -47,22 +41,15 @@ class Worker(threading.Thread):
         The worker loop, which opens a machine connection
         and runs through a series of jobs.
         """
-        self.logger.info("Launching")
-        self.provider = self.provider.thread_init()
-
+        logger.info("Worker Launch: %s", self)
         try:
             self.worker_loop()
-        except Disconnection:
-            self.state = WorkerStatus.Failure
-            self.msg = self.PRE_MSG
-        except CloudCreate:
-            self.status = WorkerStatus.Failure
-            self.msg = self.CREATE_MSG
         except Exception as e:
-            self.status = WorkerStatus.Shutdown
-            self.msg = self.ERR_MSG % str(e)
+            logger.warning("Worker Failure: %s %s", self, str(e))
+            self.exception = e
 
-        self.logger.info("Stopping")
+        logger.info("Worker Shutdown: %s", self)
+        self.duration = (time() - self.begin) if self.begin else None
 
     def worker_loop(self):
         """
@@ -70,21 +57,26 @@ class Worker(threading.Thread):
         the remote machine crashes.
         """
         with self.provider.create_client(self.name) as client:
-            while self.job != None and self.check_machine(client):
-                self.job.execute(client, self.shutdown)
-                self.job = self.cycle_jobs(self.job)
-        self.status = WorkerStatus.Success
-        self.msg = self.DONE_MSG
+            self.begin = time()
+            while not self.shutdownFlag.is_set() and self.conn_check(client):
+                job = self.get_job(self.name)
+                if not job:
+                    break
+                try:
+                    job.execute(client, self.shutdownFlag)
+                finally:
+                    self.return_job(self, job)
 
-    def check_machine(self, client):
+    def conn_check(self, client):
         """
-        Check the machine is still available.
+        Check the machine is still available by opening a connection
+        and running a known command.
         """
         try:
-            stdin, stdout, stderr = client.exec_command("echo test")
-            out = stdout.readlines()
+            stdin, stdout, stderr = client.exec_command("echo test", timeout=5)
+            return stdout.readlines() == ["test\n"]
         except Exception as e:
-            out = None
-        if out != ["test\n"]:
-            raise Disconnection
-        return True
+            return False
+
+    def __repr__(self):
+        return self.name
