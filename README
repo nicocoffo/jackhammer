@@ -1,5 +1,7 @@
-Run scripts on a bunch of pre-emptible machines, until they work
+Coordinate bulk processing of jobs across a series of pre-emtible machines.
 
 Todo:
-  - Move to general cloud library
-  - Improve failure handling
+  - Build up some sort of a template for jobs on the remote machine
+  - Collect information on machine failure rates
+  - Measure an upper bound for the price
+  - Add functions to the scheduler to inspect progress/behaviour
