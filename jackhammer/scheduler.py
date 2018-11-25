@@ -7,7 +7,7 @@ import traceback
 # Package libraries
 from jackhammer.worker import Worker
 from jackhammer.job import Job, JobState
-from jackhammer.jobQueue import JobQueue
+from jackhammer.queue import JobQueue
 
 logger = getLogger("jackhammer")
 
@@ -108,16 +108,15 @@ class Scheduler(Thread):
                 if not worker.is_alive():
                     self.worker_cleanup(worker)
 
-            # Launch a new worker if not at limit
-            if not self.ready.empty():
-                if len(self.workers) < self.config['maxWorkers']:
-                    self.worker_launch()
-
-            # Deadlock check
-            assert len(self.workers) > 0 or self.pending.empty()
-
             # Rate limiting
             sleep(self.config['loopDelay'])
+
+            # Launch a new worker if not at limit
+            while len(self.workers) < self.config['maxWorkers']:
+                job = self.ready.dequeue()
+                if not job:
+                    break
+                self.worker_launch(job)
 
     # Job Functions
     def job_prepare(self, job):
@@ -147,14 +146,15 @@ class Scheduler(Thread):
             self.add_job(j)
 
     # Worker Functions
-    def worker_launch(self):
+    def worker_launch(self, job):
         """
         Launch a worker, with all necessary callbacks.
         """
-        r = Worker(self.worker_get_job, self.worker_return_job,
+        w = Worker(job, self.worker_cycle_job,
                    self.create_provider(), self.shutdownFlag)
-        self.workers.append(r)
-        r.start()
+        self.workers.append(w)
+        logger.info("Giving %s: %s", w, job)
+        w.start()
 
     def worker_cleanup(self, worker, timeout=None):
         """
@@ -169,24 +169,31 @@ class Scheduler(Thread):
         if worker.exception:
             logger.error("%s failed, raising exception", worker)
             raise worker.exception
-        elif worker.duration < self.config['minWorkerDuration']:
+
+        if worker.duration < self.config['minWorkerDuration']:
             logger.warning("%s had a short duration: %f", worker, worker.dur)
             self.failureRate += 1
 
-    def worker_get_job(self, worker):
-        """
-        Callback for a worker to request a job.
-        """
-        job = self.ready.dequeue(timeout=self.config['readyTimeout'])
-        logger.debug("Giving %s: %s", worker, job)
-        return job
+        if worker.job:
+            logger.warning("%s ended without releasing job", worker)
+            if worker.job.status == JobState.Ready:
+                worker.job.reset()
+                self.pending.equeue(worker.job)
+            else:
+                self.completed.enqueue(worker.job)
 
-    def worker_return_job(self, worker, job):
+    def worker_cycle_job(self, worker, job):
         """
-        Callback for a worker to return a job.
+        Callback for a worker to cycle a job.
         """
-        logger.debug("%s returned: %s", worker, job)
+        logger.info("%s returned: %s", worker, job)
         self.completed.enqueue(job)
+        if self.shutdownFlag.is_set():
+            job = None
+        else:
+            job = self.ready.dequeue(timeout=self.config['readyTimeout'])
+        logger.info("Giving %s: %s", worker, job)
+        return job
 
     def __repr__(self):
         return self.name

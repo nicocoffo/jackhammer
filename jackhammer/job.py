@@ -30,7 +30,7 @@ class Job:
 
         # State
         self.name = ''
-        self.cmd = ''
+        self.script = ''
         self.resetCount = -1
         self.reset()
 
@@ -74,18 +74,21 @@ class Job:
         to a remote machine. Performs the actual job, first sending
         files and then executing the command.
         """
-        logger.info("Job Launch: %s", self)
+        logger.debug("Job Launch: %s", self)
         assert self.state == JobState.Ready
+
+        cmd = "/tmp/jackhammer.sh"
 
         try:
             send_files(client, self.config['files'])
+            send_script(client, self.script, cmd)
         except Exception as e:
             self.state = JobState.Failure
             self.exception = e
             return
 
         try:
-            code = run_command(client, self.cmd, shutdown_flag,
+            code = run_command(client, cmd, shutdown_flag,
                                self.process_stdout, self.process_stderr)
             if code == 0:
                 self.state = JobState.Success
@@ -142,6 +145,12 @@ class Job:
         Callback for processing stderr chunks from the command.
         """
         self.stderr += stderr
+
+    def report(self):
+        """
+        Simple report of STDOUT and STDERR.
+        """
+        return "STDOUT:\n%s\nSTDERR:\n%s" % (self.stdout, self.stderr)
 
     def __repr__(self):
         return self.name

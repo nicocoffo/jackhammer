@@ -2,16 +2,28 @@ import time
 import re
 import socket
 from paramiko import SFTPClient
+from paramiko.sftp_file import SFTPFile
 
 
 def send_files(client, files):
     """
     Send a list of files to the remote, formatted as a list
-    of (src, dst) pairs.
+    of dicts, with local and remote entries.
     """
     sftp = SFTPClient.from_transport(client.get_transport())
-    for (src, dst) in files:
-        sftp.put(src, dst)
+    for conf in files:
+        sftp.put(conf['local'], conf['remote'])
+    sftp.close()
+
+
+def send_script(client, content, dst):
+    """
+    Send a list of files to the remote, formatted as a list
+    of dicts, with local and remote entries.
+    """
+    sftp = SFTPClient.from_transport(client.get_transport())
+    with SFTPFile(sftp, dst, mode='w') as f:
+        f.write(content)
     sftp.close()
 
 

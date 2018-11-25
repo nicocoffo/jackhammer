@@ -9,9 +9,9 @@ class Cloud:
     creation of machines.
     """
 
-    def __init__(self, config):
+    def __init__(self, uuid, config):
         self.config = config
-        self.uuid = str(uuid.uuid4())
+        self.uuid = uuid
 
     def create_client(self, name):
         """

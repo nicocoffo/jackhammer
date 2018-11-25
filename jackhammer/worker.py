@@ -7,13 +7,12 @@ from logging import getLogger
 
 logger = getLogger("jackhammer")
 
-
 class Worker(Thread):
     """
     Worker corresponding to a remote machine.
 
     Thread should remain alive at least as long as a connection to the
-    remote machine is possible or the shutdownFlag is set.
+    remote machine is possible or the shutdown_flag is set.
 
     Will attempt to run several jobs over its lifetime, using the callbacks
     to get and return jobs.
@@ -22,18 +21,18 @@ class Worker(Thread):
     any exceptions.
     """
 
-    def __init__(self, get_job, return_job, provider, shutdownFlag, name=None):
+    def __init__(self, job, cycle_job, provider, shutdown_flag):
         Thread.__init__(self)
-        self.name = name if name else "worker-" + str(uuid4())[:16]
+        self.name = "worker-" + str(uuid4())[:16]
         self.exception = None
         self.duration = None
-        self.begin = None
+        self.startTime = None
 
         # Args
-        self.get_job = get_job
-        self.return_job = return_job
+        self.job = job
+        self.cycle_job = cycle_job
         self.provider = provider
-        self.shutdownFlag = shutdownFlag
+        self.shutdown_flag = shutdown_flag
 
     def run(self):
         """
@@ -49,7 +48,7 @@ class Worker(Thread):
             self.exception = e
 
         logger.info("Worker Shutdown: %s", self)
-        self.duration = (time() - self.begin) if self.begin else None
+        self.duration = (time() - self.startTime) if self.startTime else None
 
     def worker_loop(self):
         """
@@ -57,15 +56,10 @@ class Worker(Thread):
         the remote machine crashes.
         """
         with self.provider.create_client(self.name) as client:
-            self.begin = time()
-            while not self.shutdownFlag.is_set() and self.conn_check(client):
-                job = self.get_job(self.name)
-                if not job:
-                    break
-                try:
-                    job.execute(client, self.shutdownFlag)
-                finally:
-                    self.return_job(self, job)
+            self.startTime = time()
+            while self.job and self.conn_check(client):
+                self.job.execute(client, self.shutdown_flag)
+                self.job = self.cycle_job(self.name, self.job)
 
     def conn_check(self, client):
         """
@@ -73,8 +67,9 @@ class Worker(Thread):
         and running a known command.
         """
         try:
-            stdin, stdout, stderr = client.exec_command("echo test", timeout=5)
-            return stdout.readlines() == ["test\n"]
+            stdin, stdout, stderr = client.exec_command("echo test", timeout=10)
+            l = stdout.readlines()
+            return l == ["test\n"]
         except Exception as e:
             return False
 

@@ -15,8 +15,8 @@ class GCP(Cloud):
     machines, to keep costs low.
     """
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, uuid, config):
+        super().__init__(uuid, config)
         logger.debug("Creating GCP node driver")
         self.compute = get_driver(Provider.GCE)
         self.driver = self.compute(

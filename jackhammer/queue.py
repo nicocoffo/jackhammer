@@ -25,3 +25,6 @@ class JobQueue:
 
     def iter(self):
         return iter(self.dequeue, None)
+
+    def __len__(self):
+        return self.jobs.qsize()
