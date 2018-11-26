@@ -1,9 +1,10 @@
 # Standard Python libraries
+import uuid
 from enum import Flag, auto
 from logging import getLogger
 
 # Package libraries
-from jackhammer.utility import send_files, run_command
+from jackhammer.utility import send_files, run_command, send_script
 
 logger = getLogger("jackhammer")
 
@@ -31,8 +32,12 @@ class Job:
         # State
         self.name = ''
         self.script = ''
+        self.script_name = '/tmp/jackhammer.sh'
+        self.cmd = 'bash ' + self.script_name
         self.resetCount = -1
         self.reset()
+
+        self.work_dir = "/tmp/jackhammer-" + str(uuid.uuid4())
 
     def reset(self):
         """
@@ -77,18 +82,16 @@ class Job:
         logger.debug("Job Launch: %s", self)
         assert self.state == JobState.Ready
 
-        cmd = "/tmp/jackhammer.sh"
-
         try:
             send_files(client, self.config['files'])
-            send_script(client, self.script, cmd)
+            send_script(client, self.script, self.script_name)
         except Exception as e:
             self.state = JobState.Failure
             self.exception = e
             return
 
         try:
-            code = run_command(client, cmd, shutdown_flag,
+            code = run_command(client, self.cmd, shutdown_flag,
                                self.process_stdout, self.process_stderr)
             if code == 0:
                 self.state = JobState.Success

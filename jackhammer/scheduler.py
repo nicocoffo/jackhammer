@@ -176,9 +176,9 @@ class Scheduler(Thread):
 
         if worker.job:
             logger.warning("%s ended without releasing job", worker)
-            if worker.job.status == JobState.Ready:
+            if worker.job.state == JobState.Ready:
                 worker.job.reset()
-                self.pending.equeue(worker.job)
+                self.pending.enqueue(worker.job)
             else:
                 self.completed.enqueue(worker.job)
 

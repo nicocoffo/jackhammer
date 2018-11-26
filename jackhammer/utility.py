@@ -22,8 +22,9 @@ def send_script(client, content, dst):
     of dicts, with local and remote entries.
     """
     sftp = SFTPClient.from_transport(client.get_transport())
-    with SFTPFile(sftp, dst, mode='w') as f:
+    with sftp.open(dst, "w") as f:
         f.write(content)
+    sftp.chmod(dst, 0o775)
     sftp.close()
 
 
