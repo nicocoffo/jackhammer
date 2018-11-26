@@ -5,6 +5,8 @@ from time import time
 from uuid import uuid4
 from logging import getLogger
 
+from jackhammer.job import JobState
+
 logger = getLogger("jackhammer")
 
 class Worker(Thread):
@@ -59,6 +61,8 @@ class Worker(Thread):
             self.startTime = time()
             while self.job and self.conn_check(client):
                 self.job.execute(client, self.shutdown_flag)
+                if self.job.state == JostState.Disconnection:
+                    break
                 self.job = self.cycle_job(self.name, self.job)
 
     def conn_check(self, client):
