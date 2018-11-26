@@ -61,7 +61,7 @@ class Worker(Thread):
             self.startTime = time()
             while self.job and self.conn_check(client):
                 self.job.execute(client, self.shutdown_flag)
-                if self.job.state == JostState.Disconnection:
+                if self.job.state == JobState.Disconnection:
                     break
                 self.job = self.cycle_job(self.name, self.job)
 
