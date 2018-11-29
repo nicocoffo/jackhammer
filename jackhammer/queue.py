@@ -1,5 +1,5 @@
 # Standard Python libraries
-from queue import Queue, Empty
+from queue import PriorityQueue, Empty
 
 
 class JobQueue:
@@ -9,7 +9,7 @@ class JobQueue:
     """
 
     def __init__(self):
-        self.jobs = Queue()
+        self.jobs = PriorityQueue()
 
     def empty(self):
         return self.jobs.empty()

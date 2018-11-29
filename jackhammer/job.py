@@ -28,6 +28,7 @@ class Job:
         # Args
         self.config = config
         self.prereqs = prereqs
+        self.priority = 10
 
         # State
         self.name = ''
@@ -154,6 +155,9 @@ class Job:
         Simple report of STDOUT and STDERR.
         """
         return "STDOUT:\n%s\nSTDERR:\n%s" % (self.stdout, self.stderr)
+
+    def __lt__(self, other):
+        return self.priority < other.priority
 
     def __repr__(self):
         return self.name
