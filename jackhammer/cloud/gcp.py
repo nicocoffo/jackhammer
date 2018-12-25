@@ -30,11 +30,18 @@ class GCP(Cloud):
         metadata = node['metadata'] if 'metadata' in node else {}
         metadata['ssh-keys'] = key
 
+        storage = self.driver.create_volume(
+                node['diskSize'], 
+                name,
+                location=node['zone'],
+                image=node['image'])
+
         return self.driver.create_node(
             name,
             node['size'],
             node['image'],
             node['zone'],
+            ex_boot_disk=storage,
             ex_tags=node['tags'],
             ex_metadata=metadata,
             ex_preemptible=True)
