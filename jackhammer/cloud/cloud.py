@@ -28,6 +28,9 @@ class Cloud:
         for m in self.list_machines():
             m.destroy()
 
+        for v in self.list_volumes():
+            v.destroy()
+
     def list_machines(self):
         """
         List all used machines.

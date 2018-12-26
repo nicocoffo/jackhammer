@@ -48,3 +48,6 @@ class GCP(Cloud):
 
     def list_machines(self):
         return [m for m in self.driver.list_nodes() if self.uuid in m.name]
+
+    def list_volumes(self):
+        return [v for v in self.driver.list_volumes() if self.uuid in v.name]
