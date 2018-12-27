@@ -117,6 +117,8 @@ class Job:
             return self.success()
         elif self.retry():
             logger.warning("Job Retry: %s", self)
+            logger.warning("STDOUT:\n%s", self.stdout)
+            logger.warning("STDERR:\n%s", self.stderr)
             self.reset()
             return [self]
         else:
